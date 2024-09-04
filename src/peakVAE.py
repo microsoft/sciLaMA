@@ -303,9 +303,11 @@ def si_atac_vae_loss(x_batch, x_out,
     BCE = torch.nn.BCELoss(reduction="none")(x_batch_prime, (x_batch>0).float()).sum(dim=-1) + \
           gamma_ * torch.nn.BCELoss(reduction="none")(x_latent_batch_prime, (x_batch>0).float()).sum(dim=-1)
     NLL = BCE
-    cKLD = D.kl_divergence(D.Normal(cmu, csigma), D.Normal(0, 1)).sum(dim=-1)
-    pKLD = D.kl_divergence(D.Normal(gmu, gsigma), D.Normal(0, 1)).sum(dim=-1)
-    total_loss = (NLL.sum() + cKLD * beta).mean() + (pKLD * beta).mean()
+    cKLD = D.kl_divergence(D.Normal(cmu, csigma), D.Normal(0, 1)).sum(dim=-1)   
+    # B x latent --> B (sum across latent) --> mean across sample
+    pKLD = D.kl_divergence(D.Normal(gmu, gsigma), D.Normal(0, 1)).mean(dim=0)  
+    # P x latent --> latent (mean across peak) --> sum across latent
+    total_loss = (NLL.sum() + cKLD * beta).mean() + (pKLD * beta).sum()
     # NLL.mean() + beta * (cKLD.mean() + pKLD.mean())
     return total_loss, NLL.mean(), BCE.mean(), cKLD.mean(), pKLD.mean(), beta
 
