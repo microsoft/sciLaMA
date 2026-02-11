@@ -38,10 +38,8 @@ training:
   epochs_before_beta_warmup: 25   # epochs with KL weight = beta_start (no KL)
   beta_warmup_rate: 0.05           # per-epoch increase after warmup (until beta_end)
   gamma: 0.05 # weight for joint loss components
+  val_check_interval: 0.5         # fraction of train dataloader; 0.25 = validate 4x per epoch
 
 output:
   save_dir: "./results"
-  save_key: "X_sciLaMA"  # sample embeddings -> adata.obsm[save_key]
-  save_feature_embeddings: true  # feature latent -> parquet (when model has feature VAE)
-  feature_embedding_filename: "feature_sciLaMA.parquet"  # gene_id, embedding columns (same format as input)
-  save_model: true
+  save_key: "X_sciLaMA"  # sample embeddings -> adata.obsm[save_key] and parquet (mode-specific names)

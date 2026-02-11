@@ -20,7 +20,7 @@ pip install -e .
 src/sciLaMA/
 ├── __init__.py
 ├── config.py          # Configuration models (Pydantic)
-├── trainer.py         # High-level training and prediction
+├── trainer.py         # High-level training (saves checkpoints and embeddings automatically)
 ├── data.py            # RNADataset, SciLaMADataModule
 ├── utils.py           # Covariate encoding, feature embedding loading, checks
 ├── model.py           # Components (RNA encoder/decoder, MultiModal encoder/decoder)
@@ -37,22 +37,18 @@ script/
 
 1. **Prepare your data**: an `.h5ad` file with `adata.obs["split"]` containing `"train"`, `"val"`, and optionally `"test"`. Expression in `adata.X` should be normalized/scaled (mean≈0, std≈1).
 2. **Edit** `script/template.yaml`: set `data.path` to your h5ad, and optionally add covariates or external feature embeddings.
-3. **Train and predict**:
+3. **Train** (checkpoints and embeddings are saved automatically):
 
 ```python
 from sciLaMA import SciLaMATrainer
 
-# Load config and train
 trainer = SciLaMATrainer("script/template.yaml")
 trainer.train()
 
-# Get sample and feature embeddings
-trainer.predict()
-
-# Access results
-adata = trainer.datamodule.adata.copy()
+# Access results (saved to save_dir during train())
+adata = trainer.datamodule.adata
 sample_emb = adata.obsm["X_sciLaMA"]  # (n_cells, latent_dim)
-# Feature embeddings saved to results/feature_sciLaMA.parquet (gene_id, embedding columns)
+# Parquet: sample_embeddings_*.parquet, feature_embeddings_*.parquet (see TRAINING_MODES.md)
 ```
 
 ### Load from checkpoint
@@ -60,7 +56,7 @@ sample_emb = adata.obsm["X_sciLaMA"]  # (n_cells, latent_dim)
 ```python
 trainer = SciLaMATrainer("script/template.yaml")
 trainer.load_checkpoint("results/X_sciLaMA_direct.ckpt")
-trainer.predict()
+# Use trainer.module and trainer.datamodule for inference or analysis
 ```
 
 ### Training modes
@@ -128,24 +124,23 @@ with open("my_config.yaml", "w") as f:
     yaml.dump(config, f)
 ```
 
-**4. Train and predict.**
+**4. Train** (outputs saved automatically).
 
 ```python
 from sciLaMA import SciLaMATrainer
 
 trainer = SciLaMATrainer("my_config.yaml")
 trainer.train()
-trainer.predict()
 ```
 
-**5. Inspect outputs.**
+**5. Inspect outputs** (saved to save_dir).
 
 ```python
 adata = trainer.datamodule.adata
 print("Sample embeddings:", adata.obsm["X_sciLaMA"].shape)
 
 import pandas as pd
-feat = pd.read_parquet("results/feature_sciLaMA.parquet")
+feat = pd.read_parquet("results/feature_embeddings_direct_sciLaMA.parquet")  # or stepwise_sciLaMA, etc.
 print("Feature embeddings:", feat.shape)
 ```
 
@@ -155,8 +150,8 @@ print("Feature embeddings:", feat.shape)
 
 - **Data**: `path` to `.h5ad`; `split_column` and `train_split_key` / `val_split_key` / `test_split_key` (val used for early stopping); `categorical_covariate_keys` (one-hot); `continuous_covariate_keys` (z-score); `external_feature_embeddings` (Parquet with gene_id, embedding; intersection of genes used).
 - **Model**: Hidden dimensions, latent size, dropout, fusion method, etc.
-- **Training**: Epochs, learning rate, mode (`direct`, `stepwise`, `beta_vae`); `devices` and `strategy` for multi-GPU (e.g. `devices: 2`, `strategy: "ddp"`).
-- **Output**: `save_key` → sample embeddings in `adata.obsm[save_key]`; `save_feature_embeddings` and `feature_embedding_filename` → feature latent to Parquet under `save_dir` when the model has a feature VAE.
+- **Training**: Epochs, learning rate, mode (`direct`, `stepwise`, `beta_vae`); `val_check_interval` (fraction of train dataloader per validation, e.g. 0.25 = 4× per epoch); `devices` and `strategy` for multi-GPU (e.g. `devices: 2`, `strategy: "ddp"`).
+- **Output**: `save_key` → sample embeddings in `adata.obsm[save_key]`; Parquet filenames are mode-specific (e.g. `sample_embeddings_beta_vae.parquet`, `feature_embeddings_direct_sciLaMA.parquet`). All saved automatically after training.
 
 ## Parquet formats
 
@@ -183,7 +178,15 @@ external_feature_embeddings:
 - Each modality’s embeddings are aligned to the same gene order
 - The MultiModalFeatureEncoder fuses these into one latent per gene (average, MoE, or PoE)
 
-### Output: feature embeddings
+### Output: saved files
+
+After training, the following are saved automatically (see [TRAINING_MODES.md](TRAINING_MODES.md)):
+
+- **Checkpoints**: `{save_key}_{mode}.ckpt` in `save_dir`
+- **Sample embeddings**: `adata.obsm[save_key]` and mode-specific Parquet (e.g. `sample_embeddings_beta_vae.parquet`, `sample_embeddings_direct_sciLaMA.parquet`, `sample_embeddings_stepwise_sciLaMA.parquet` after stepwise phase 3)
+- **Gene embeddings** (when model has feature VAE): mode-specific Parquet (e.g. `feature_embeddings_direct_sciLaMA.parquet`, `feature_embeddings_intermediate.parquet` after stepwise phase 2, `feature_embeddings_stepwise_sciLaMA.parquet` after stepwise phase 3)
+
+### Output: feature embeddings format
 
 A **single** Parquet file per run (same format as input):
 

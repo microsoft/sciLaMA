@@ -9,25 +9,25 @@ from .model import (
     RNA_DECODER,
     MultiModalFeatureEncoder,
 )
-from .loss import sample_vae_loss, joint_scilama_loss
+from .loss import sample_vae_loss, feature_vae_loss, joint_scilama_loss
 from .metrics import pearson_reconstruction, spearman_reconstruction
 from .config import SciLaMAConfig
-
-
-def init_weights(m):
-    if type(m) == nn.Linear:
-        torch.nn.init.xavier_normal_(m.weight)
-        if m.bias is not None:
-            m.bias.data.fill_(0.0)
+from .utils import init_weights
 
 
 class SciLaMALightningModule(pl.LightningModule):
     def __init__(self, config: SciLaMAConfig, n_features: int, n_covariates: int,
                  total_samples: int, feature_input_embeddings: None | Dict[str, torch.Tensor] = None,
-                 covariate_encoding_state: None | Dict[str, Any] = None):
+                 covariate_encoding_state: None | Dict[str, Any] = None,
+                 feature_only_phase: bool = False):
+        """
+        feature_only_phase: True only for stepwise phase 2 (feature VAE only, sample frozen).
+        Uses feature_vae_loss instead of joint_scilama_loss. Not a config mode.
+        """
         super().__init__()
         self.save_hyperparameters(ignore=["feature_input_embeddings"])
         self.config = config
+        self.feature_only_phase = feature_only_phase
         self.n_features = n_features
         self.n_covariates = n_covariates
         self.total_samples = total_samples
@@ -127,10 +127,30 @@ class SciLaMALightningModule(pl.LightningModule):
     def _get_kl_weight(self):
         if self.current_epoch <= self.config.training.epochs_before_beta_warmup:
             return self.config.training.beta_start
+        epochs_since_warmup = self.current_epoch - self.config.training.epochs_before_beta_warmup
+        weight = self.config.training.beta_start + self.config.training.beta_warmup_rate * epochs_since_warmup
+        return min(self.config.training.beta_end, weight)
+
+    def _forward_feature_branch(self):
+        """Forward through feature encoder/decoder. Returns (mu_f, sigma_f, z_f, f_dec_h)."""
+        if self.feature_input_embeddings:
+            inputs = [emb.to(self.device) for emb in self.feature_input_embeddings.values()]
+            mu_f, sigma_f, z_f = self.feature_encoder(inputs, None)
         else:
-            epochs_since_warmup = self.current_epoch - self.config.training.epochs_before_beta_warmup
-            weight = self.config.training.beta_start + self.config.training.beta_warmup_rate * epochs_since_warmup
-            return min(self.config.training.beta_end, weight)
+            if self.Xt is None:
+                raise ValueError("Xt (transposed data) is required for feature VAE without external embeddings.")
+            mu_f, sigma_f, z_f = self.feature_encoder(self.Xt, None)
+        f_dec_h, _ = self.feature_decoder(z_f, None)
+        return mu_f, sigma_f, z_f, f_dec_h
+
+    def _forward_sample_and_recon(self, x, c, mu_f, z_f, f_dec_h):
+        """Forward through sample encoder/decoder and compute reconstruction terms."""
+        mu_s, sigma_s, z_s = self.sample_encoder(x, c)
+        sample_hidden_batch, x_out = self.sample_decoder(z_s, c)
+        bias = self.sample_decoder.output_mean.bias
+        x_latent_batch_prime = torch.mm(z_s, z_f.t()) + bias
+        x_batch_prime = torch.mm(sample_hidden_batch, f_dec_h.t()) + bias
+        return mu_s, sigma_s, z_s, x_out, x_batch_prime, x_latent_batch_prime
 
     def training_step(self, batch, batch_idx):
         x, c = batch
@@ -148,37 +168,28 @@ class SciLaMALightningModule(pl.LightningModule):
             }, prog_bar=True, on_step=True, on_epoch=False)
             return total_loss
 
+        if self.feature_only_phase:
+            mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
+            _, _, _, _, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
+            total_loss, nll, mse, kld = feature_vae_loss(
+                x, x_batch_prime, x_latent_batch_prime,
+                mu_f, sigma_f, beta, self.config.training.gamma
+            )
         else:
-            if self.feature_input_embeddings:
-                inputs = [emb.to(self.device) for emb in self.feature_input_embeddings.values()]
-                f_mu, f_sigma, f_z = self.feature_encoder(inputs, None)
-                f_dec_h, _ = self.feature_decoder(f_z, None)
-            else:
-                if self.Xt is None:
-                    raise ValueError("Xt (transposed data) is required for feature VAE without external embeddings.")
-                f_mu, f_sigma, f_z = self.feature_encoder(self.Xt, None)
-                f_dec_h, _ = self.feature_decoder(f_z, None)
-
-            s_mu, s_sigma, s_z = self.sample_encoder(x, c)
-            sample_hidden_batch, x_out = self.sample_decoder(s_z, c)
-            bias = self.sample_decoder.output_mean.bias
-
-            feature_hidden = f_dec_h
-            x_latent_batch_prime = torch.mm(s_z, f_z.t()) + bias
-            x_batch_prime = torch.mm(sample_hidden_batch, feature_hidden.t()) + bias
-
+            mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
+            mu_s, sigma_s, _, x_out, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
             total_loss, nll, mse, kld = joint_scilama_loss(
                 x, x_out, x_batch_prime, x_latent_batch_prime,
-                s_mu, s_sigma, f_mu, f_sigma,
+                mu_s, sigma_s, mu_f, sigma_f,
                 beta, self.config.training.gamma
             )
-            pearson = pearson_reconstruction(x_batch_prime, x)
-            spearman = spearman_reconstruction(x_batch_prime, x)
-            self.log_dict({
-                "train_loss": total_loss, "train_nll": nll, "train_mse": mse, "train_kld": kld, "beta": beta,
-                "train_pearson": pearson, "train_spearman": spearman,
-            }, prog_bar=True, on_step=True, on_epoch=False)
-            return total_loss
+        pearson = pearson_reconstruction(x_batch_prime, x)
+        spearman = spearman_reconstruction(x_batch_prime, x)
+        self.log_dict({
+            "train_loss": total_loss, "train_nll": nll, "train_mse": mse, "train_kld": kld, "beta": beta,
+            "train_pearson": pearson, "train_spearman": spearman,
+        }, prog_bar=True, on_step=True, on_epoch=False)
+        return total_loss
 
     def validation_step(self, batch, batch_idx):
         x, c = batch
@@ -192,28 +203,24 @@ class SciLaMALightningModule(pl.LightningModule):
             spearman = spearman_reconstruction(output_p, x)
             self.log_dict({"val_loss": total_loss, "val_nll": nll, "val_mse": mse, "val_kld": kld, "val_pearson": pearson, "val_spearman": spearman}, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
 
+        elif self.feature_only_phase:
+            mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
+            _, _, _, _, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
+            total_loss, nll, mse, kld = feature_vae_loss(
+                x, x_batch_prime, x_latent_batch_prime,
+                mu_f, sigma_f, beta, self.config.training.gamma
+            )
         else:
-            if self.feature_input_embeddings:
-                inputs = [emb.to(self.device) for emb in self.feature_input_embeddings.values()]
-                f_mu, f_sigma, f_z = self.feature_encoder(inputs, None)
-                f_dec_h, _ = self.feature_decoder(f_z, None)
-            else:
-                f_mu, f_sigma, f_z = self.feature_encoder(self.Xt, None)
-                f_dec_h, _ = self.feature_decoder(f_z, None)
-
-            s_mu, s_sigma, s_z = self.sample_encoder(x, c)
-            sample_hidden_batch, x_out = self.sample_decoder(s_z, c)
-            bias = self.sample_decoder.output_mean.bias
-
-            feature_hidden = f_dec_h
-            x_latent_batch_prime = torch.mm(s_z, f_z.t()) + bias
-            x_batch_prime = torch.mm(sample_hidden_batch, feature_hidden.t()) + bias
-
+            mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
+            mu_s, sigma_s, _, x_out, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
             total_loss, nll, mse, kld = joint_scilama_loss(
                 x, x_out, x_batch_prime, x_latent_batch_prime,
-                s_mu, s_sigma, f_mu, f_sigma,
+                mu_s, sigma_s, mu_f, sigma_f,
                 beta, self.config.training.gamma
             )
-            pearson = pearson_reconstruction(x_batch_prime, x)
-            spearman = spearman_reconstruction(x_batch_prime, x)
-            self.log_dict({"val_loss": total_loss, "val_nll": nll, "val_mse": mse, "val_kld": kld, "val_pearson": pearson, "val_spearman": spearman}, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+        pearson = pearson_reconstruction(x_batch_prime, x)
+        spearman = spearman_reconstruction(x_batch_prime, x)
+        self.log_dict(
+            {"val_loss": total_loss, "val_nll": nll, "val_mse": mse, "val_kld": kld, "val_pearson": pearson, "val_spearman": spearman},
+            prog_bar=True, on_step=False, on_epoch=True, sync_dist=True
+        )

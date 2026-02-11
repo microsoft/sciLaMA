@@ -40,13 +40,11 @@ class TrainingConfig(BaseModel):
     epochs_before_beta_warmup: int = 25  # epochs with KL weight = beta_start (no KL)
     beta_warmup_rate: float = 0.05   # per-epoch increase after warmup (until beta_end)
     gamma: float = 0.05
+    val_check_interval: float = 0.5  # fraction of training dataloader; 0.5 = validate 2x per epoch
 
 class OutputConfig(BaseModel):
     save_dir: str = "./results"
-    save_key: str = "X_sciLaMA"  # sample embeddings in adata.obsm[save_key]
-    save_feature_embeddings: bool = True  # save feature latent to parquet when mode has feature VAE
-    feature_embedding_filename: str = "feature_sciLaMA.parquet"  # under save_dir
-    save_model: bool = True
+    save_key: str = "X_sciLaMA"  # sample embeddings in adata.obsm[save_key] and parquet (mode-specific names)
 
 class SciLaMAConfig(BaseModel):
     data: DataConfig

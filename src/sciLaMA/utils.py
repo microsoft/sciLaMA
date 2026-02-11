@@ -2,8 +2,17 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import torch
+import torch.nn as nn
 import os
 from typing import Dict, Tuple, List, Any, TYPE_CHECKING
+
+
+def init_weights(m: nn.Module) -> None:
+    """Xavier init for Linear layers. Use with module.apply(init_weights)."""
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_normal_(m.weight)
+        if m.bias is not None:
+            m.bias.data.fill_(0.0)
 
 if TYPE_CHECKING:
     from .config import DataConfig
