@@ -50,7 +50,7 @@ trainer.train()
 trainer.predict()
 
 # Access results
-adata = trainer.datamodule.adata
+adata = trainer.datamodule.adata.copy()
 sample_emb = adata.obsm["X_sciLaMA"]  # (n_cells, latent_dim)
 # Feature embeddings saved to results/feature_sciLaMA.parquet (gene_id, embedding columns)
 ```

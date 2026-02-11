@@ -29,6 +29,7 @@ class SciLaMATrainer:
         self.module = SciLaMALightningModule.load_from_checkpoint(
             checkpoint_path,
             config=self.config,
+            weights_only=False,
         )
         self.datamodule.set_covariate_encoding_state(self.module.covariate_encoding_state)
         self.datamodule.setup()
@@ -110,6 +111,7 @@ class SciLaMATrainer:
                 total_samples=self.datamodule.adata.n_obs,
                 feature_input_embeddings=self.datamodule.feature_input_embeddings,
                 covariate_encoding_state=self.datamodule.get_covariate_encoding_state(),
+                weights_only=False,
             )
 
     def _train_stepwise(self):
@@ -153,6 +155,7 @@ class SciLaMATrainer:
             total_samples=self.datamodule.adata.n_obs,
             feature_input_embeddings=self.datamodule.feature_input_embeddings,
             covariate_encoding_state=self.datamodule.get_covariate_encoding_state(),
+            weights_only=False,
         )
         
         # Phase 2: Joint Training
@@ -167,6 +170,7 @@ class SciLaMATrainer:
             total_samples=self.datamodule.adata.n_obs,
             feature_input_embeddings=self.datamodule.feature_input_embeddings,
             covariate_encoding_state=self.datamodule.get_covariate_encoding_state(),
+            weights_only=False,
         )
         
         # Setup Xt if needed (only static_embedding genes)

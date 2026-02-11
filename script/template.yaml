@@ -1,5 +1,5 @@
 data:
-  path: "path/to/data.h5ad"
+  path: "data/data.h5ad"
   external_feature_embeddings:
     # Parquet format: gene_id, embedding (both required).
     gene_text: "data/gene_text.parquet"

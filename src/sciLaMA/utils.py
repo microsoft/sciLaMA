@@ -121,13 +121,6 @@ def load_and_match_feature_embeddings(
 ) -> Tuple[sc.AnnData, Dict[str, torch.Tensor]]:
     """
     Load external feature embeddings from Parquet and match with adata.var_names.
-
-    **Input format** (per parquet): gene_id, embedding (both required columns; each embedding entry is a vector).
-    **embedding_paths**: dict mapping modality_name -> path (e.g. {"gene_pt": "x.parquet", "gene_atac": "y.parquet"}).
-    **Intersection**: genes are intersected across adata and all parquets.
-    **static_embedding**: sets adata.var["static_embedding"] = True for genes in the intersection, False otherwise.
-    Does NOT subset adata; modeling uses only genes with static_embedding=True.
-    **Returns**: full adata (unchanged n_vars), dict of aligned tensors for static_embedding genes per modality.
     """
     if not embedding_paths:
         adata.var["static_embedding"] = True  # no external embeddings -> model all genes
@@ -163,8 +156,7 @@ def load_and_match_feature_embeddings(
     if n_dropped > 0:
         print(f"  ({n_dropped} genes with static_embedding=False, excluded from modeling)")
 
-    # Do NOT subset adata; mark which genes have static embeddings
-    adata.var["static_embedding"] = adata.var_names.astype(str).isin(common_genes_list).values
+    adata.var["static_embedding"] = np.asarray(adata.var_names.astype(str).isin(common_genes_list))
 
     aligned_embeddings = {}
     for name, df in embeddings.items():
