@@ -124,11 +124,13 @@ def load_and_match_feature_embeddings(
 
     **Input format** (per parquet): gene_id, embedding (both required columns; each embedding entry is a vector).
     **embedding_paths**: dict mapping modality_name -> path (e.g. {"gene_pt": "x.parquet", "gene_atac": "y.parquet"}).
-    **Intersection**: genes are intersected across adata and all parquets; adata subset to common genes; prints counts.
-    **static_embedding**: adds adata.var["static_embedding"] = True for genes in the intersection.
-    **Returns**: subsetted adata, dict of aligned tensors (same gene order) per modality.
+    **Intersection**: genes are intersected across adata and all parquets.
+    **static_embedding**: sets adata.var["static_embedding"] = True for genes in the intersection, False otherwise.
+    Does NOT subset adata; modeling uses only genes with static_embedding=True.
+    **Returns**: full adata (unchanged n_vars), dict of aligned tensors for static_embedding genes per modality.
     """
     if not embedding_paths:
+        adata.var["static_embedding"] = True  # no external embeddings -> model all genes
         return adata, {}
 
     adata_genes = set(adata.var_names.astype(str))
@@ -157,16 +159,16 @@ def load_and_match_feature_embeddings(
     print(f"  adata.var_names: {len(adata_genes)} genes")
     for name, n in file_gene_counts.items():
         print(f"  {name}: {n} genes")
-    print(f"  intersection: {len(common_genes_list)} common genes")
+    print(f"  intersection (static_embedding=True): {len(common_genes_list)} genes used for modeling")
     if n_dropped > 0:
-        print(f"  (dropped {n_dropped} genes not in all sources)")
+        print(f"  ({n_dropped} genes with static_embedding=False, excluded from modeling)")
 
-    adata_subset = adata[:, common_genes_list].copy()
-    adata_subset.var["static_embedding"] = True
+    # Do NOT subset adata; mark which genes have static embeddings
+    adata.var["static_embedding"] = adata.var_names.astype(str).isin(common_genes_list).values
 
     aligned_embeddings = {}
     for name, df in embeddings.items():
         emb_subset = df.loc[common_genes_list]
         aligned_embeddings[name] = torch.tensor(emb_subset.values, dtype=torch.float32)
 
-    return adata_subset, aligned_embeddings
+    return adata, aligned_embeddings

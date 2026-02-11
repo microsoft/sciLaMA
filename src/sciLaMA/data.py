@@ -60,12 +60,15 @@ class SciLaMADataModule(pl.LightningDataModule):
             self.adata, self.feature_input_embeddings = load_and_match_feature_embeddings(
                 self.adata, self.config.external_feature_embeddings
             )
-            print(f"Subsetting to {self.adata.n_vars} features based on external embeddings.")
         else:
             print("No external feature embeddings provided. Using all features.")
+            self.adata.var["static_embedding"] = True
             self.feature_input_embeddings = {}
 
-        self.n_features = self.adata.n_vars
+        # Use only genes with static_embedding=True for modeling (no adata subsetting)
+        static_mask = self.adata.var["static_embedding"].values
+        self.n_features = int(static_mask.sum())
+        print(f"Modeling {self.n_features} features (static_embedding=True).")
 
         # Split indices (need train first to fit covariate encoding from train only)
         if self.config.split_column not in self.adata.obs:
@@ -97,8 +100,8 @@ class SciLaMADataModule(pl.LightningDataModule):
             self.n_covariates = 0
             covariates = torch.zeros((self.adata.n_obs, 0))
 
-        # Prepare X and datasets
-        X = self.adata.X
+        # Prepare X and datasets (only static_embedding genes for modeling)
+        X = self.adata[:, static_mask].X
         if hasattr(X, "toarray"):
             X = X.toarray()
         X = torch.FloatTensor(X)
@@ -144,7 +147,8 @@ class SciLaMADataModule(pl.LightningDataModule):
         return None
 
     def predict_dataloader(self):
-        X = self.adata.X
+        static_mask = self.adata.var["static_embedding"].values
+        X = self.adata[:, static_mask].X
         if hasattr(X, "toarray"):
             X = X.toarray()
         X = torch.FloatTensor(X)

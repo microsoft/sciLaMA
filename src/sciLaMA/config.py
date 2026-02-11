@@ -25,6 +25,7 @@ class ModelConfig(BaseModel):
     var_eps: float = 1e-4
 
 class TrainingConfig(BaseModel):
+    seed: int = 42
     mode: Literal["direct", "stepwise", "beta_vae"] = "direct"
     max_epochs: int = 500
     batch_size: int = 128

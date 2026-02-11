@@ -35,6 +35,7 @@ class SciLaMATrainer:
         print("Model loaded successfully.")
 
     def train(self):
+        pl.seed_everything(self.config.training.seed)
         # Setup data
         self.datamodule.setup()
         
@@ -74,13 +75,12 @@ class SciLaMATrainer:
             covariate_encoding_state=self.datamodule.get_covariate_encoding_state(),
         )
         
-        # Setup Xt if needed
+        # Setup Xt if needed (only static_embedding genes for feature VAE)
         if not self.datamodule.feature_input_embeddings and mode != "beta_vae":
-             # Need Xt
-             X = self.datamodule.adata.X
+             static_mask = self.datamodule.adata.var["static_embedding"].values
+             X = self.datamodule.adata[:, static_mask].X
              if hasattr(X, "toarray"):
                  X = X.toarray()
-             # Transpose
              Xt = torch.FloatTensor(X).t()
              self.module.setup_Xt(Xt)
 
@@ -169,9 +169,10 @@ class SciLaMATrainer:
             covariate_encoding_state=self.datamodule.get_covariate_encoding_state(),
         )
         
-        # Setup Xt if needed
+        # Setup Xt if needed (only static_embedding genes)
         if not self.datamodule.feature_input_embeddings:
-             X = self.datamodule.adata.X
+             static_mask = self.datamodule.adata.var["static_embedding"].values
+             X = self.datamodule.adata[:, static_mask].X
              if hasattr(X, "toarray"):
                  X = X.toarray()
              Xt = torch.FloatTensor(X).t()
@@ -244,19 +245,21 @@ class SciLaMATrainer:
         self.datamodule.adata.obsm[key] = embeddings
         print(f"Stored sample embeddings in adata.obsm['{key}']")
 
-        # Feature embeddings: save to parquet (same feature order as adata.var_names)
+        # Feature embeddings: save to parquet (static_embedding genes only)
         if self.config.output.save_feature_embeddings and getattr(self.module, "feature_encoder", None) is not None:
             import pandas as pd
+            static_mask = self.datamodule.adata.var["static_embedding"].values
             with torch.no_grad():
                 if self.module.feature_input_embeddings and len(self.module.feature_input_embeddings) > 0:
                     inputs = [emb.to(device) for emb in self.module.feature_input_embeddings.values()]
                     f_mu, _, _ = self.module.feature_encoder(inputs, None)
                     feature_emb = f_mu.cpu().numpy()
                 else:
-                    Xt = torch.FloatTensor(self.datamodule.adata.X.toarray() if hasattr(self.datamodule.adata.X, "toarray") else self.datamodule.adata.X).t().to(device)
+                    X = self.datamodule.adata[:, static_mask].X
+                    Xt = torch.FloatTensor(X.toarray() if hasattr(X, "toarray") else X).t().to(device)
                     f_mu, _, _ = self.module.feature_encoder(Xt, None)
                     feature_emb = f_mu.cpu().numpy()
-            gene_ids = self.datamodule.adata.var_names.astype(str).tolist()
+            gene_ids = self.datamodule.adata.var_names[static_mask].astype(str).tolist()
             embeddings = [feature_emb[i].tolist() for i in range(len(gene_ids))]
             feature_df = pd.DataFrame({"gene_id": gene_ids, "embedding": embeddings})
             out_path = os.path.join(self.config.output.save_dir, self.config.output.feature_embedding_filename)

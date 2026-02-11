@@ -8,7 +8,6 @@ from .model import (
     RNA_ENCODER,
     RNA_DECODER,
     MultiModalFeatureEncoder,
-    MultiModalFeatureDecoder,
 )
 from .loss import sample_vae_loss, joint_scilama_loss
 from .metrics import pearson_reconstruction, spearman_reconstruction
@@ -73,9 +72,13 @@ class SciLaMALightningModule(pl.LightningModule):
                     fuse=config.model.fusion_method, batchnorm=bn, layernorm=ln,
                     activation=activation, dropout_rate=dropout, var_eps=var_eps
                 )
-                self.feature_decoder = MultiModalFeatureDecoder(
-                    feature_dims=feature_dims, hidden_dims=hidden_dims, latent_dim=latent_dim,
-                    batchnorm=bn, layernorm=ln, activation=activation, dropout_rate=dropout
+                # Same architecture as RNA decoder; use RNA_DECODER directly
+                output_dim = feature_dims[0]
+                self.feature_decoder = RNA_DECODER(
+                    feature_dim=output_dim, cov=0,
+                    hidden_dim=hidden_dims, latent_dim=latent_dim,
+                    batchnorm=bn, layernorm=ln, activation=activation,
+                    dropout_rate=dropout
                 )
             else:
                 self.feature_encoder = RNA_ENCODER(

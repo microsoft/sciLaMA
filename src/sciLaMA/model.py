@@ -147,17 +147,3 @@ class MultiModalFeatureEncoder(nn.Module):
         fused_z = D.Normal(fused_mu, fused_sigma).rsample()
         return fused_mu, fused_sigma, fused_z
 
-
-class MultiModalFeatureDecoder(nn.Module):
-    """Single decoder for the fused latent."""
-    def __init__(self, feature_dims: List[int], hidden_dims: List[int], latent_dim: int,
-                 batchnorm: bool = True, layernorm: bool = True, activation: nn.Module = nn.LeakyReLU(),
-                 dropout_rate: float = 0):
-        super(MultiModalFeatureDecoder, self).__init__()
-        output_dim = feature_dims[0]
-        self.decoder = RNA_DECODER(output_dim, 0, hidden_dims, latent_dim,
-                                   batchnorm, layernorm, activation, dropout_rate)
-
-    def forward(self, z, c_list=None):
-        dec_h, output = self.decoder(z, None)
-        return dec_h, output
