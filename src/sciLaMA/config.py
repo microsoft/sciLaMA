@@ -1,5 +1,5 @@
-from typing import List, Literal, Dict
-from pydantic import BaseModel, Field
+from typing import List, Literal
+from pydantic import BaseModel
 
 class DataConfig(BaseModel):
     path: str
