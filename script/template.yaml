@@ -1,0 +1,46 @@
+data:
+  path: "data/data.h5ad"
+  external_feature_embeddings:
+    # parquet format: gene_id, embedding columns (both required).
+    gene_text: "data/gene_text.parquet"
+    gene_protein: "data/gene_protein.parquet"
+  check_scaling: true
+  split_column: "split"   # obs column name (default: "split")
+  train_split_key: "train"
+  val_split_key: "val"
+  test_split_key: "test"  # or null for the case of no test split
+  # optional covariates (default null). encoding saved in the checkpoint.
+  categorical_covariate_keys: null   # e.g. ['assay_type', 'sex'] for one-hot encoding
+  continuous_covariate_keys: null   # e.g. ['age'] for z-score encoding
+
+model:
+  hidden_dims: [900, 400]
+  latent_dim: 50
+  dropout_rate: 0.1
+  batchnorm: false
+  layernorm: true
+  activation: "LeakyReLU"
+  fusion_method: "average" # 'average', 'MoE', 'PoE' | only used when 2+ external_feature_embeddings are provided
+  var_eps: 0.0001
+
+training:
+  seed: 42
+  mode: "direct" # 'direct', 'stepwise', 'beta_vae'
+  max_epochs: 500
+  batch_size: 128
+  devices: 1     # or 2, 4, "auto" for multi-GPU
+  strategy: "auto"  # "ddp" for multi-GPU (auto picks ddp when devices > 1), "ddp_find_unused_parameters_true" for multi-GPU with unused parameters
+  learning_rate: 0.001
+  patience: 25
+  weight_decay: 0.0
+  beta_start: 0.0
+  beta_end: 1.0
+  epochs_before_beta_warmup: 25   # epochs with KL weight = beta_start (no KL)
+  beta_warmup_rate: 0.05           # per-epoch increase after warmup (until beta_end)
+  gamma: 0.05 # weight for joint loss components
+  val_check_interval: 1         # fraction of train dataloader (e.g. 0.5 = validate 2x per epoch; 2 = validate every 2 epochs)
+
+output:
+  save_dir: "./results"
+  save_key: "X_sciLaMA"  # sample embeddings -> adata.obsm[save_key] and parquet (mode-specific names)
+  save_top_k: 1 # keep top k checkpoints (sorted by val loss)
