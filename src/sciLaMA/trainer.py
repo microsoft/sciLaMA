@@ -1,5 +1,4 @@
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 import torch
 import os
 import yaml
@@ -9,6 +8,13 @@ import pandas as pd
 from .config import SciLaMAConfig
 from .data import SciLaMADataModule
 from .model_lit import SciLaMALightningModule
+from .callbacks import (
+    first_epoch_beta_reached,
+    DelayedModelCheckpoint,
+    DelayedEarlyStopping,
+    PrintModelArchitecture,
+)
+
 
 class SciLaMATrainer:
     def __init__(self, config_path: str = "script/template.yaml"):
@@ -132,6 +138,13 @@ class SciLaMATrainer:
             weights_only=False,
         )
 
+    def _load_best_if_saved(self, module, best_path: str, phase_config: SciLaMAConfig, feature_only_phase: bool = False):
+        """Return module loaded from best_path if it exists, else return module and print fallback message."""
+        if best_path and os.path.isfile(best_path):
+            return self._load_best_module(best_path, phase_config, feature_only_phase)
+        print("No checkpoint saved (training ended before beta=1 or no improvement). Using in-memory model.")
+        return module
+
     def _setup_Xt_if_needed(self, module, mode: str):
         """Setup Xt buffer when feature VAE needs transposed data (no external embeddings)."""
         if self.datamodule.feature_input_embeddings or mode == "beta_vae":
@@ -151,23 +164,31 @@ class SciLaMATrainer:
             devices=self.config.training.devices,
             strategy=self.config.training.strategy,
             val_check_interval=self.config.training.val_check_interval,
+            logger=False,
         )
 
     def _get_callbacks(self, mode: str):
         os.makedirs(self.config.output.save_dir, exist_ok=True)
-        checkpoint_callback = ModelCheckpoint(
-            dirpath=self.config.output.save_dir,
-            filename=f"{self.config.output.save_key}_{mode}",
+        start_epoch = first_epoch_beta_reached(self.config)
+        if start_epoch > 0:
+            print(f"Checkpoint saving and early-stopping patience start from epoch {start_epoch} (after beta reaches {self.config.training.beta_end}).")
+        checkpoint_callback = DelayedModelCheckpoint(
+            start_epoch=start_epoch,
+            save_key=self.config.output.save_key,
+            phase=mode,
+            save_top_k=self.config.output.save_top_k,
             monitor="val_loss",
             mode="min",
-            save_top_k=1
+            dirpath=self.config.output.save_dir,
         )
-        early_stop_callback = EarlyStopping(
+        early_stop_callback = DelayedEarlyStopping(
+            start_epoch=start_epoch,
             monitor="val_loss",
+            mode="min",
             patience=self.config.training.patience,
-            mode="min"
         )
-        return [checkpoint_callback, early_stop_callback]
+        print_arch_callback = PrintModelArchitecture()
+        return [checkpoint_callback, early_stop_callback, print_arch_callback]
 
     def _train_standard(self, mode: str):
         print(f"Initializing model in mode: {mode}")
@@ -182,8 +203,8 @@ class SciLaMATrainer:
 
         best_path = callbacks[0].best_model_path
         if best_path:
-            print(f"Loading best model from {best_path}")
-            self.module = self._load_best_module(best_path, self.config)
+            print(f"Best model: {best_path}")
+        self.module = self._load_best_if_saved(self.module, best_path or "", self.config)
         print("\nSaving outputs...")
         if mode == "beta_vae":
             self._save_outputs_after_training(self.module, sample_suffix="beta_vae")
@@ -211,7 +232,7 @@ class SciLaMATrainer:
 
         best_p1_path = callbacks_p1[0].best_model_path
         print(f"Phase 1 complete. Best model: {best_p1_path}")
-        module_phase1 = self._load_best_module(best_p1_path, phase1_config)
+        module_phase1 = self._load_best_if_saved(module_phase1, best_p1_path, phase1_config)
         
         # Phase 2: Feature VAE only (sample frozen); uses feature_vae_loss with gamma=0
         print("\n=== Phase 2: Training Feature VAE (Sample Frozen, feature_vae_loss, gamma=0) ===")
@@ -233,7 +254,7 @@ class SciLaMATrainer:
 
         best_p2_path = callbacks_p2[0].best_model_path
         print(f"Phase 2 complete. Best model: {best_p2_path}")
-        module_phase2 = self._load_best_module(best_p2_path, phase2_config, feature_only_phase=True)
+        module_phase2 = self._load_best_if_saved(module_phase2, best_p2_path, phase2_config, feature_only_phase=True)
         
         self._save_outputs_after_training(module_phase1, sample_suffix="beta_vae")
         self._save_outputs_after_training(module_phase2, feature_suffix="intermediate")
@@ -259,6 +280,6 @@ class SciLaMATrainer:
 
         best_p3_path = callbacks_p3[0].best_model_path
         print(f"Phase 3 complete. Best model: {best_p3_path}")
-        self.module = self._load_best_module(best_p3_path, phase3_config)
+        self.module = self._load_best_if_saved(module_phase3, best_p3_path, phase3_config)
         print("\nSaving final outputs...")
         self._save_outputs_after_training(self.module, sample_suffix="stepwise_sciLaMA", feature_suffix="stepwise_sciLaMA")

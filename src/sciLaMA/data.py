@@ -42,19 +42,19 @@ class SciLaMADataModule(pl.LightningDataModule):
         self._covariate_encoding_state = state
 
     def setup(self, stage: str | None = None):
-        # Load data
+        # load data
         print(f"Loading data from {self.config.path}...")
         try:
             self.adata = sc.read_h5ad(self.config.path)
         except Exception as e:
             raise ValueError(f"Failed to load data from {self.config.path}: {e}")
 
-        # Check scaling
+        # check scaling
         if self.config.check_scaling:
             if not check_normalized_scaled(self.adata):
                 print("Warning: Data might not be normalized/scaled correctly for MSE loss.")
 
-        # Handle external feature embeddings
+        # handle external feature embeddings
         if self.config.external_feature_embeddings:
             print("Loading external feature embeddings...")
             self.adata, self.feature_input_embeddings = load_and_match_feature_embeddings(
@@ -65,12 +65,12 @@ class SciLaMADataModule(pl.LightningDataModule):
             self.adata.var["static_embedding"] = True
             self.feature_input_embeddings = {}
 
-        # Use only genes with static_embedding=True for modeling (no adata subsetting)
+        # use only genes with static_embedding=True for modeling (no adata subsetting)
         static_mask = self.adata.var["static_embedding"].values
         self.n_features = int(static_mask.sum())
         print(f"Modeling {self.n_features} features (static_embedding=True).")
 
-        # Split indices (need train first to fit covariate encoding from train only)
+        # split indices (need train first to fit covariate encoding from train only)
         if self.config.split_column not in self.adata.obs:
             raise ValueError(f"Split column '{self.config.split_column}' not found in obs.")
         split_col = self.adata.obs[self.config.split_column]
@@ -82,7 +82,7 @@ class SciLaMADataModule(pl.LightningDataModule):
         if val_idx.sum() == 0:
             raise ValueError(f"No '{self.config.val_split_key}' samples in obs['{self.config.split_column}']. Val is required for early stopping.")
 
-        # Covariates: discrete (one-hot) + continuous (z-score). Fit state on train only; save in checkpoint for inference.
+        # covariates: discrete (one-hot) + continuous (z-score). fit state on train only; save in checkpoint for inference.
         cat_cols = _categorical_covariate_columns(self.config)
         has_cont = bool(self.config.continuous_covariate_keys)
         if cat_cols or has_cont:
@@ -100,15 +100,18 @@ class SciLaMADataModule(pl.LightningDataModule):
             self.n_covariates = 0
             covariates = torch.zeros((self.adata.n_obs, 0))
 
-        # Prepare X and datasets (only static_embedding genes for modeling)
+        # prepare X and datasets (only static_embedding genes for modeling)
         X = self.adata[:, static_mask].X
         if hasattr(X, "toarray"):
             X = X.toarray()
         X = torch.FloatTensor(X)
-        self.train_dataset = RNADataset(X[train_idx], covariates[train_idx])
-        self.val_dataset = RNADataset(X[val_idx], covariates[val_idx])
-        if test_idx.sum() > 0:
-            self.test_dataset = RNADataset(X[test_idx], covariates[test_idx])
+        train_mask = train_idx.to_numpy()
+        val_mask = val_idx.to_numpy()
+        test_mask = test_idx.to_numpy()
+        self.train_dataset = RNADataset(X[train_mask], covariates[train_mask])
+        self.val_dataset = RNADataset(X[val_mask], covariates[val_mask])
+        if test_mask.sum() > 0:
+            self.test_dataset = RNADataset(X[test_mask], covariates[test_mask])
 
         print(f"Data setup complete: Train={len(self.train_dataset) if self.train_dataset else 0}, "
               f"Val={len(self.val_dataset) if self.val_dataset else 0}, "

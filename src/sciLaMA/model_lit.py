@@ -43,7 +43,7 @@ class SciLaMALightningModule(pl.LightningModule):
         activation = act_cls()
         var_eps = config.model.var_eps
 
-        # Sample VAE
+        # Sample VAE: cells × genes -> z_s (sample latent). Input dim = n_genes.
         self.sample_encoder = RNA_ENCODER(
             feature_dim=n_features, cov=n_covariates,
             hidden_dim=hidden_dims, latent_dim=latent_dim,
@@ -51,20 +51,20 @@ class SciLaMALightningModule(pl.LightningModule):
             dropout_rate=dropout, var_eps=var_eps
         )
         self.sample_decoder = RNA_DECODER(
-            feature_dim=n_features, cov=n_covariates,
-            hidden_dim=hidden_dims, latent_dim=latent_dim,
+            cov=n_covariates, hidden_dim=hidden_dims, latent_dim=latent_dim,
             batchnorm=bn, layernorm=ln, activation=activation,
-            dropout_rate=dropout
+            dropout_rate=dropout, feature_dim=n_features
         )
 
         self.sample_encoder.apply(init_weights)
         self.sample_decoder.apply(init_weights)
 
-        # Feature VAE
+        # Feature VAE (gene-level; only for direct/stepwise, not beta_vae)
         self.feature_encoder = None
         self.feature_decoder = None
 
         if config.training.mode != "beta_vae":
+            # option A: External embeddings (e.g. LLM-derived gene_text, gene_protein)
             if self.feature_input_embeddings and len(self.feature_input_embeddings) > 0:
                 feature_dims = [emb.shape[1] for emb in self.feature_input_embeddings.values()]
                 self.feature_encoder = MultiModalFeatureEncoder(
@@ -72,14 +72,13 @@ class SciLaMALightningModule(pl.LightningModule):
                     fuse=config.model.fusion_method, batchnorm=bn, layernorm=ln,
                     activation=activation, dropout_rate=dropout, var_eps=var_eps
                 )
-                # Same architecture as RNA decoder; use RNA_DECODER directly
-                output_dim = feature_dims[0]
+                # output_layer=False: decoder only produces dec_h for x_batch_prime = dec_h @ f_dec_h.T
                 self.feature_decoder = RNA_DECODER(
-                    feature_dim=output_dim, cov=0,
-                    hidden_dim=hidden_dims, latent_dim=latent_dim,
+                    cov=0, hidden_dim=hidden_dims, latent_dim=latent_dim,
                     batchnorm=bn, layernorm=ln, activation=activation,
-                    dropout_rate=dropout
+                    dropout_rate=dropout, output_layer=False
                 )
+            # option B: No external embeddings: use Xt (genes × cells, transposed expression)
             else:
                 self.feature_encoder = RNA_ENCODER(
                     feature_dim=total_samples, cov=0,
@@ -88,10 +87,9 @@ class SciLaMALightningModule(pl.LightningModule):
                     dropout_rate=dropout, var_eps=var_eps
                 )
                 self.feature_decoder = RNA_DECODER(
-                    feature_dim=total_samples, cov=0,
-                    hidden_dim=hidden_dims, latent_dim=latent_dim,
+                    cov=0, hidden_dim=hidden_dims, latent_dim=latent_dim,
                     batchnorm=bn, layernorm=ln, activation=activation,
-                    dropout_rate=dropout
+                    dropout_rate=dropout, output_layer=False
                 )
 
             if self.feature_encoder:
@@ -99,6 +97,7 @@ class SciLaMALightningModule(pl.LightningModule):
             if self.feature_decoder:
                 self.feature_decoder.apply(init_weights)
 
+        # buffer for X.T when feature VAE has no external embeddings (option B)
         self.Xt = None
 
     def setup_Xt(self, Xt: torch.Tensor):
@@ -144,7 +143,10 @@ class SciLaMALightningModule(pl.LightningModule):
         return mu_f, sigma_f, z_f, f_dec_h
 
     def _forward_sample_and_recon(self, x, c, mu_f, z_f, f_dec_h):
-        """Forward through sample encoder/decoder and compute reconstruction terms."""
+        """
+        Forward sample VAE and compute x_batch_prime = dec_h @ f_dec_h.T + b,
+        x_latent_prime = z_s @ z_f.T + b for joint/feature loss.
+        """
         mu_s, sigma_s, z_s = self.sample_encoder(x, c)
         sample_hidden_batch, x_out = self.sample_decoder(z_s, c)
         bias = self.sample_decoder.output_mean.bias
@@ -152,32 +154,28 @@ class SciLaMALightningModule(pl.LightningModule):
         x_batch_prime = torch.mm(sample_hidden_batch, f_dec_h.t()) + bias
         return mu_s, sigma_s, z_s, x_out, x_batch_prime, x_latent_batch_prime
 
-    def training_step(self, batch, batch_idx):
-        x, c = batch
-        beta = self._get_kl_weight()
-
+    def _compute_loss_and_metrics(self, x, c, beta: float):
+        """Compute total loss, NLL, MSE, KLD, Pearson, Spearman."""
         if self.config.training.mode == "beta_vae":
+            # beta_vae or stepwise phase 1 —> optimize sample VAE only
             mu, sigma, z = self.sample_encoder(x, c)
-            dec_h, output_p = self.sample_decoder(z, c)
+            _, output_p = self.sample_decoder(z, c)
             total_loss, nll, mse, kld = sample_vae_loss(x, mu, sigma, output_p, beta)
             pearson = pearson_reconstruction(output_p, x)
             spearman = spearman_reconstruction(output_p, x)
-            self.log_dict({
-                "train_loss": total_loss, "train_nll": nll, "train_mse": mse, "train_kld": kld, "beta": beta,
-                "train_pearson": pearson, "train_spearman": spearman,
-            }, prog_bar=True, on_step=True, on_epoch=False)
-            return total_loss
+            return total_loss, nll, mse, kld, pearson, spearman
+        
+        mu_s, sigma_s, z_s, x_out, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
+        mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
 
         if self.feature_only_phase:
-            mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
-            _, _, _, _, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
+            # stepwise phase 2 —> optimize feature VAE only, freeze sample VAE (gamma=0)
             total_loss, nll, mse, kld = feature_vae_loss(
                 x, x_batch_prime, x_latent_batch_prime,
                 mu_f, sigma_f, beta, self.config.training.gamma
             )
         else:
-            mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
-            mu_s, sigma_s, _, x_out, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
+            # direct or stepwise phase 3 —> optimize joint sample + feature VAEs (gamma = 0.05 by default)
             total_loss, nll, mse, kld = joint_scilama_loss(
                 x, x_out, x_batch_prime, x_latent_batch_prime,
                 mu_s, sigma_s, mu_f, sigma_f,
@@ -185,6 +183,12 @@ class SciLaMALightningModule(pl.LightningModule):
             )
         pearson = pearson_reconstruction(x_batch_prime, x)
         spearman = spearman_reconstruction(x_batch_prime, x)
+        return total_loss, nll, mse, kld, pearson, spearman
+
+    def training_step(self, batch, batch_idx):
+        x, c = batch
+        beta = self._get_kl_weight()
+        total_loss, nll, mse, kld, pearson, spearman = self._compute_loss_and_metrics(x, c, beta)
         self.log_dict({
             "train_loss": total_loss, "train_nll": nll, "train_mse": mse, "train_kld": kld, "beta": beta,
             "train_pearson": pearson, "train_spearman": spearman,
@@ -193,34 +197,7 @@ class SciLaMALightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, c = batch
-        beta = 1.0
-
-        if self.config.training.mode == "beta_vae":
-            mu, sigma, z = self.sample_encoder(x, c)
-            dec_h, output_p = self.sample_decoder(z, c)
-            total_loss, nll, mse, kld = sample_vae_loss(x, mu, sigma, output_p, beta)
-            pearson = pearson_reconstruction(output_p, x)
-            spearman = spearman_reconstruction(output_p, x)
-            self.log_dict({"val_loss": total_loss, "val_nll": nll, "val_mse": mse, "val_kld": kld, "val_pearson": pearson, "val_spearman": spearman}, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-
-        elif self.feature_only_phase:
-            mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
-            _, _, _, _, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
-            total_loss, nll, mse, kld = feature_vae_loss(
-                x, x_batch_prime, x_latent_batch_prime,
-                mu_f, sigma_f, beta, self.config.training.gamma
-            )
-        else:
-            mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
-            mu_s, sigma_s, _, x_out, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
-            total_loss, nll, mse, kld = joint_scilama_loss(
-                x, x_out, x_batch_prime, x_latent_batch_prime,
-                mu_s, sigma_s, mu_f, sigma_f,
-                beta, self.config.training.gamma
-            )
-        pearson = pearson_reconstruction(x_batch_prime, x)
-        spearman = spearman_reconstruction(x_batch_prime, x)
-        self.log_dict(
-            {"val_loss": total_loss, "val_nll": nll, "val_mse": mse, "val_kld": kld, "val_pearson": pearson, "val_spearman": spearman},
-            prog_bar=True, on_step=False, on_epoch=True, sync_dist=True
-        )
+        total_loss, nll, mse, kld, pearson, spearman = self._compute_loss_and_metrics(x, c, beta=1.0)
+        self.log_dict({
+            "val_loss": total_loss, "val_nll": nll, "val_mse": mse, "val_kld": kld, "val_pearson": pearson, "val_spearman": spearman,
+        }, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)

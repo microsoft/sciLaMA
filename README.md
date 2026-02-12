@@ -20,9 +20,10 @@ pip install -e .
 src/sciLaMA/
 ├── __init__.py
 ├── config.py          # Configuration models (Pydantic)
-├── trainer.py         # High-level training (saves checkpoints and embeddings automatically)
+├── trainer.py         # High-level training (saves checkpoints and embeddings)
+├── callbacks.py       # DelayedModelCheckpoint, DelayedEarlyStopping, 
 ├── data.py            # RNADataset, SciLaMADataModule
-├── utils.py           # Covariate encoding, feature embedding loading, checks
+├── utils.py           # Covariate encoding, feature embedding loading, init_weights
 ├── model.py           # Components (RNA encoder/decoder, MultiModal encoder/decoder)
 ├── loss.py            # sample_vae_loss, feature_vae_loss, joint_scilama_loss
 ├── metrics.py         # pearson_reconstruction, spearman_reconstruction (torchmetrics)

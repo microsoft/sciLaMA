@@ -59,14 +59,20 @@ class RNA_ENCODER(nn.Module):
 
 
 class RNA_DECODER(nn.Module):
-    def __init__(self, feature_dim: int, cov: int,
+    def __init__(self, cov: int,
                  hidden_dim: List[int], latent_dim: int,
                  batchnorm: bool = True, layernorm: bool = True,
                  activation: nn.Module = nn.LeakyReLU(),
-                 dropout_rate: float = 0):
+                 dropout_rate: float = 0,
+                 output_layer: bool = True,
+                 feature_dim: int | None = None):
+        """feature_dim: required when output_layer=True (e.g. sample decoder). Ignored when output_layer=False."""
         super(RNA_DECODER, self).__init__()
+        if output_layer and feature_dim is None:
+            raise ValueError("feature_dim is required when output_layer=True")
         hidden_dim_decoder = list(np.flip(hidden_dim))
         self.cov = cov
+        self.output_layer = output_layer
 
         if len(hidden_dim_decoder) == 1:
             self.dec_hidden = nn.Linear(latent_dim + cov, hidden_dim_decoder[0], bias=True)
@@ -84,7 +90,7 @@ class RNA_DECODER(nn.Module):
         if dropout_rate > 0:
             self.final_layer_list.append(nn.Dropout(dropout_rate))
         self.final_layer = nn.Sequential(*self.final_layer_list)
-        self.output_mean = nn.Linear(hidden_dim_decoder[-1], feature_dim, bias=True)
+        self.output_mean = nn.Linear(hidden_dim_decoder[-1], feature_dim, bias=True) if output_layer else None
 
     def reconstruct_mean(self, dec_h):
         mean_x = self.output_mean(dec_h)
@@ -100,8 +106,10 @@ class RNA_DECODER(nn.Module):
 
         dec_h = self.dec_hidden(dec_input)
         last_h = self.final_layer(dec_h)
-        output_res = self.reconstruct_mean(last_h)
-        return dec_h, output_res
+        if self.output_mean is not None:
+            output_res = self.reconstruct_mean(last_h)
+            return dec_h, output_res
+        return dec_h, None
 
 
 def fuse_latents(mu_list: List[torch.Tensor], sigma_list: List[torch.Tensor], fuse: str = 'average'):
@@ -146,4 +154,3 @@ class MultiModalFeatureEncoder(nn.Module):
         fused_mu, fused_sigma = fuse_latents(mu_list, sigma_list, fuse=self.fuse)
         fused_z = D.Normal(fused_mu, fused_sigma).rsample()
         return fused_mu, fused_sigma, fused_z
-
