@@ -14,23 +14,6 @@ uv sync
 pip install -e .
 ```
 
-## Structure
-
-```
-src/sciLaMA/
-├── __init__.py
-├── config.py          # Configuration models (Pydantic)
-├── trainer.py         # High-level training (saves checkpoints and embeddings)
-├── callbacks.py       # DelayedModelCheckpoint, DelayedEarlyStopping, 
-├── data.py            # RNADataset, SciLaMADataModule
-├── utils.py           # Covariates, encoding, init_weights, rank-zero print
-├── model.py           # Components (RNA encoder/decoder, MultiModal encoder/decoder)
-├── loss.py            # sample_vae_loss, feature_vae_loss, joint_scilama_loss
-├── metrics.py         # pearson_reconstruction, spearman_reconstruction (torchmetrics)
-└── model_lit.py       # SciLaMALightningModule
-script/
-└── template.yaml      # Example config
-```
 
 ## Tutorial
 
@@ -49,7 +32,6 @@ trainer.train()
 # Access results (saved to save_dir during train())
 adata = trainer.datamodule.adata
 sample_emb = adata.obsm["X_sciLaMA"]  # (n_cells, latent_dim)
-# Parquet: sample_embeddings_*.parquet, feature_embeddings_*.parquet (see TRAINING_MODES.md)
 ```
 
 ### Load from checkpoint
@@ -65,8 +47,8 @@ trainer.load_checkpoint("results/X_sciLaMA_direct.ckpt")
 ```yaml
 # script/template.yaml
 training:
-  mode: "direct"     # joint sample + feature VAE (needs external embeddings or uses Xt)
-  # mode: "stepwise"  # phase 1: sample (beta) VAE; phase 2: joint with frozen sample VAE
+  mode: "direct"      # joint sample + feature VAE (needs external embeddings or uses Xt)
+  # mode: "stepwise"  # phase 1: sample VAE; phase 2: feature VAE; phase 3: joint sample + feature VAE
   # mode: "beta_vae"  # sample (beta) VAE only (no feature VAE)
 ```
 
@@ -149,12 +131,6 @@ print("Feature embeddings:", feat.shape)
 
 `script/template.yaml` controls data, model, training, and output.
 
-- **Data**: `path` to `.h5ad`; `split_column` and `train_split_key` / `val_split_key` / `test_split_key` (val used for early stopping); `categorical_covariate_keys` (one-hot); `continuous_covariate_keys` (z-score); `external_feature_embeddings` (Parquet with gene_id, embedding; intersection of genes used).
-- **Model**: Hidden dimensions, latent size, dropout, fusion method, etc.
-- **Training**: Epochs, learning rate, mode (`direct`, `stepwise`, `beta_vae`); `val_check_interval` (fraction of train dataloader per validation, e.g. 0.25 = 4× per epoch); `devices` and `strategy` for multi-GPU (e.g. `devices: 2`, `strategy: "ddp"`).
-- **Output**: `save_key` → sample embeddings in `adata.obsm[save_key]`; Parquet filenames are mode-specific (e.g. `sample_embeddings_beta_vae.parquet`, `feature_embeddings_direct_sciLaMA.parquet`). All saved automatically after training.
-
-## Parquet formats
 
 ### Input: external feature embeddings (multi-modal)
 
@@ -162,8 +138,8 @@ print("Feature embeddings:", feat.shape)
 
 ```yaml
 external_feature_embeddings:
-  gene_pt: "data/gene_pt.parquet"      # modality 1
-  gene_atac: "data/gene_atac.parquet"  # modality 2
+  gene_text: "data/gene_text.parquet"        # modality 1: NCBI gene card -> text-embedding model
+  gene_protein: "data/gene_protien.parquet"  # modality 2: protein sequence -> ESM2 embedding 
 ```
 
 **Per-file format:**
@@ -181,19 +157,14 @@ external_feature_embeddings:
 
 ### Output: saved files
 
-After training, the following are saved automatically (see [TRAINING_MODES.md](TRAINING_MODES.md)):
+After training, the following are saved automatically:
 
 - **Checkpoints**: `{save_key}_{mode}.ckpt` in `save_dir`
 - **Sample embeddings**: `adata.obsm[save_key]` and mode-specific Parquet (e.g. `sample_embeddings_beta_vae.parquet`, `sample_embeddings_direct_sciLaMA.parquet`, `sample_embeddings_stepwise_sciLaMA.parquet` after stepwise phase 3)
 - **Gene embeddings** (when model has feature VAE): mode-specific Parquet (e.g. `feature_embeddings_direct_sciLaMA.parquet`, `feature_embeddings_intermediate.parquet` after stepwise phase 2, `feature_embeddings_stepwise_sciLaMA.parquet` after stepwise phase 3)
 
-### Output: feature embeddings format
 
-A **single** Parquet file per run (same format as input):
 
-- **gene_id**: gene ID (same order as `adata.var_names`)
-- **embedding**: column of vectors (latent_dim per gene)
-- Always one fused latent per gene, even with multiple input modalities
 
 ## Citation
 
