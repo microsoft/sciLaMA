@@ -13,6 +13,7 @@ from .loss import sample_vae_loss, feature_vae_loss, joint_scilama_loss
 from .metrics import pearson_reconstruction, spearman_reconstruction
 from .config import SciLaMAConfig
 from .utils import init_weights
+from .utils import r0_print
 
 
 class SciLaMALightningModule(pl.LightningModule):
@@ -108,7 +109,7 @@ class SciLaMALightningModule(pl.LightningModule):
             param.requires_grad = False
         for param in self.sample_decoder.parameters():
             param.requires_grad = False
-        print("Sample VAE frozen.")
+        r0_print("Sample VAE frozen.")
 
     def forward(self, x, c):
         return self.sample_encoder(x, c)
@@ -165,8 +166,8 @@ class SciLaMALightningModule(pl.LightningModule):
             spearman = spearman_reconstruction(output_p, x)
             return total_loss, nll, mse, kld, pearson, spearman
         
-        mu_s, sigma_s, z_s, x_out, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
         mu_f, sigma_f, z_f, f_dec_h = self._forward_feature_branch()
+        mu_s, sigma_s, z_s, x_out, x_batch_prime, x_latent_batch_prime = self._forward_sample_and_recon(x, c, mu_f, z_f, f_dec_h)
 
         if self.feature_only_phase:
             # stepwise phase 2 —> optimize feature VAE only, freeze sample VAE (gamma=0)

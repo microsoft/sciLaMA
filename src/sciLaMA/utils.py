@@ -7,6 +7,31 @@ import os
 from typing import Dict, Tuple, List, Any, TYPE_CHECKING
 
 
+def is_rank_zero() -> bool:
+    """True if current process is rank 0 (main process). Safe for single-GPU and multi-GPU."""
+    if torch.distributed.is_initialized():
+        return torch.distributed.get_rank() == 0
+    rank = os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0"))
+    return int(rank) == 0
+
+
+def r0_print(*args: Any, **kwargs: Any) -> None:
+    """Print only on rank 0. Use for all user-facing messages in multi-GPU."""
+    if is_rank_zero():
+        print(*args, **kwargs)
+
+
+def r0_rich(*objects: Any, **kwargs: Any) -> None:
+    """Rich-format output only on rank 0. Use for key info (phases, checkpoints, config summary)."""
+    if not is_rank_zero():
+        return
+    try:
+        from rich.console import Console
+        Console().print(*objects, **kwargs)
+    except ImportError:
+        print(*objects, **kwargs)
+
+
 def init_weights(m: nn.Module) -> None:
     """Xavier init for Linear layers. Use with module.apply(init_weights)."""
     if isinstance(m, nn.Linear):
@@ -119,7 +144,7 @@ def check_normalized_scaled(adata: sc.AnnData, layer: str = None) -> bool:
     is_scaled = np.abs(std - 1.0) < 0.2
 
     if not (is_centered and is_scaled):
-        print(f"Warning: Data does not appear to be scaled. Mean: {mean:.4f}, Std: {std:.4f}")
+        r0_print(f"Warning: Data does not appear to be scaled. Mean: {mean:.4f}, Std: {std:.4f}")
         return False
     return True
 
@@ -157,13 +182,13 @@ def load_and_match_feature_embeddings(
     common_genes_list = sorted(list(common_genes))
     n_dropped = len(adata_genes) - len(common_genes)
 
-    print("Gene intersection (static embeddings):")
-    print(f"  adata.var_names: {len(adata_genes)} genes")
+    r0_print("Gene intersection (static embeddings):")
+    r0_print(f"  adata.var_names: {len(adata_genes)} genes")
     for name, n in file_gene_counts.items():
-        print(f"  {name}: {n} genes")
-    print(f"  intersection (static_embedding=True): {len(common_genes_list)} genes used for modeling")
+        r0_print(f"  {name}: {n} genes")
+    r0_print(f"  intersection (static_embedding=True): {len(common_genes_list)} genes used for modeling")
     if n_dropped > 0:
-        print(f"  ({n_dropped} genes with static_embedding=False, excluded from modeling)")
+        r0_print(f"  ({n_dropped} genes with static_embedding=False, excluded from modeling)")
 
     adata.var["static_embedding"] = np.asarray(adata.var_names.astype(str).isin(common_genes_list))
 

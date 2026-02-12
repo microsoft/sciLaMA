@@ -5,6 +5,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 from .config import SciLaMAConfig
+from .utils import r0_rich
 
 
 def first_epoch_beta_reached(config: SciLaMAConfig) -> int:
@@ -80,6 +81,5 @@ class PrintModelArchitecture(pl.Callback):
     """Print model architecture when training starts."""
 
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        print("\n----- Model architecture -----")
-        print(pl_module)
-        print("-" * 50 + "\n")
+        from rich.panel import Panel
+        r0_rich(Panel(str(pl_module), title="Model architecture", border_style="blue"))

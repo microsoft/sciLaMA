@@ -14,6 +14,7 @@ from .callbacks import (
     DelayedEarlyStopping,
     PrintModelArchitecture,
 )
+from .utils import r0_print, r0_rich
 
 
 class SciLaMATrainer:
@@ -31,7 +32,7 @@ class SciLaMATrainer:
         Load a trained model from a checkpoint file. Restores covariate encoding state (one-hot mapping, continuous mean/std)
         from the checkpoint for consistency with training.
         """
-        print(f"Loading checkpoint from {checkpoint_path}...")
+        r0_print(f"Loading checkpoint from {checkpoint_path}...")
         self.module = SciLaMALightningModule.load_from_checkpoint(
             checkpoint_path,
             config=self.config,
@@ -39,7 +40,7 @@ class SciLaMATrainer:
         )
         self.datamodule.set_covariate_encoding_state(self.module.covariate_encoding_state)
         self.datamodule.setup()
-        print("Model loaded successfully.")
+        r0_rich("[green]Model loaded successfully.[/green]")
 
     def train(self):
         pl.seed_everything(self.config.training.seed)
@@ -75,7 +76,7 @@ class SciLaMATrainer:
         emb_list = [embeddings[i].tolist() for i in range(len(sample_ids))]
         df = pd.DataFrame({"sample_id": sample_ids, "embedding": emb_list})
         df.to_parquet(out_path)
-        print(f"Stored sample embeddings in adata.obsm['{key}'] and {out_path}")
+        r0_print(f"Stored sample embeddings in adata.obsm['{key}'] and {out_path}")
 
     def _save_feature_embeddings(self, module, out_path: str):
         """Save gene embeddings (feature VAE latent) from module to parquet."""
@@ -100,7 +101,7 @@ class SciLaMATrainer:
         feature_df = pd.DataFrame({"gene_id": gene_ids, "embedding": embeddings})
         os.makedirs(self.config.output.save_dir, exist_ok=True)
         feature_df.to_parquet(out_path)
-        print(f"Stored feature embeddings in {out_path}")
+        r0_print(f"Stored feature embeddings in {out_path}")
 
     def _save_outputs_after_training(self, module, sample_suffix: str | None = None, feature_suffix: str | None = None):
         """Save outputs after training. Suffixes follow: beta_vae, direct_sciLaMA, intermediate, stepwise_sciLaMA."""
@@ -142,7 +143,7 @@ class SciLaMATrainer:
         """Return module loaded from best_path if it exists, else return module and print fallback message."""
         if best_path and os.path.isfile(best_path):
             return self._load_best_module(best_path, phase_config, feature_only_phase)
-        print("No checkpoint saved (training ended before beta=1 or no improvement). Using in-memory model.")
+        r0_print("No checkpoint saved (training ended before beta=1 or no improvement). Using in-memory model.")
         return module
 
     def _setup_Xt_if_needed(self, module, mode: str):
@@ -171,7 +172,7 @@ class SciLaMATrainer:
         os.makedirs(self.config.output.save_dir, exist_ok=True)
         start_epoch = first_epoch_beta_reached(self.config)
         if start_epoch > 0:
-            print(f"Checkpoint saving and early-stopping patience start from epoch {start_epoch} (after beta reaches {self.config.training.beta_end}).")
+            r0_rich(f"[yellow]Checkpoint saving and early-stopping patience start from epoch {start_epoch}[/yellow] (after β={self.config.training.beta_end})")
         checkpoint_callback = DelayedModelCheckpoint(
             start_epoch=start_epoch,
             save_key=self.config.output.save_key,
@@ -191,21 +192,21 @@ class SciLaMATrainer:
         return [checkpoint_callback, early_stop_callback, print_arch_callback]
 
     def _train_standard(self, mode: str):
-        print(f"Initializing model in mode: {mode}")
+        r0_rich(f"[bold]Initializing model in mode:[/bold] {mode}")
         self.module = self._create_module(self.config)
         self._setup_Xt_if_needed(self.module, mode)
 
         callbacks = self._get_callbacks(mode)
         self.trainer = self._create_trainer(callbacks)
 
-        print("Starting training...")
+        r0_print("Starting training...")
         self.trainer.fit(self.module, self.datamodule)
 
         best_path = callbacks[0].best_model_path
         if best_path:
-            print(f"Best model: {best_path}")
+            r0_rich(f"[green]Best model:[/green] {best_path}")
         self.module = self._load_best_if_saved(self.module, best_path or "", self.config)
-        print("\nSaving outputs...")
+        r0_print("\nSaving outputs...")
         if mode == "beta_vae":
             self._save_outputs_after_training(self.module, sample_suffix="beta_vae")
         else:
@@ -218,10 +219,10 @@ class SciLaMATrainer:
         2. Fix sample VAE, train feature VAE only (gamma=0)
         3. Jointly train sciLaMA (both VAEs, gamma=0.05)
         """
-        print("Starting Stepwise Training (3 phases)...")
+        r0_rich("[bold cyan]Starting Stepwise Training (3 phases)[/bold cyan]")
         
         # Phase 1: Sample VAE only
-        print("\n=== Phase 1: Training Sample VAE ===")
+        r0_rich("\n[bold blue]═══ Phase 1: Training Sample VAE ═══[/bold blue]")
         phase1_config = copy.deepcopy(self.config)
         phase1_config.training.mode = "beta_vae"
 
@@ -231,11 +232,11 @@ class SciLaMATrainer:
         trainer_p1.fit(module_phase1, self.datamodule)
 
         best_p1_path = callbacks_p1[0].best_model_path
-        print(f"Phase 1 complete. Best model: {best_p1_path}")
+        r0_rich(f"[green]Phase 1 complete.[/green] Best model: {best_p1_path}")
         module_phase1 = self._load_best_if_saved(module_phase1, best_p1_path, phase1_config)
         
         # Phase 2: Feature VAE only (sample frozen); uses feature_vae_loss with gamma=0
-        print("\n=== Phase 2: Training Feature VAE (Sample Frozen, feature_vae_loss, gamma=0) ===")
+        r0_rich("\n[bold blue]═══ Phase 2: Training Feature VAE (Sample Frozen, γ=0) ═══[/bold blue]")
         phase2_config = copy.deepcopy(self.config)
         phase2_config.training.mode = "direct"
         phase2_config.training.gamma = 0.0
@@ -243,7 +244,7 @@ class SciLaMATrainer:
         module_phase2 = self._create_module(phase2_config, feature_only_phase=True)
         self._setup_Xt_if_needed(module_phase2, "direct")
 
-        print("Transferring Sample VAE weights (frozen)...")
+        r0_print("Transferring Sample VAE weights (frozen)...")
         module_phase2.sample_encoder.load_state_dict(module_phase1.sample_encoder.state_dict())
         module_phase2.sample_decoder.load_state_dict(module_phase1.sample_decoder.state_dict())
         module_phase2.freeze_beta_vae()
@@ -253,14 +254,14 @@ class SciLaMATrainer:
         trainer_p2.fit(module_phase2, self.datamodule)
 
         best_p2_path = callbacks_p2[0].best_model_path
-        print(f"Phase 2 complete. Best model: {best_p2_path}")
+        r0_rich(f"[green]Phase 2 complete.[/green] Best model: {best_p2_path}")
         module_phase2 = self._load_best_if_saved(module_phase2, best_p2_path, phase2_config, feature_only_phase=True)
         
         self._save_outputs_after_training(module_phase1, sample_suffix="beta_vae")
         self._save_outputs_after_training(module_phase2, feature_suffix="intermediate")
         
         # Phase 3: Joint training (both VAEs, gamma=0.05)
-        print("\n=== Phase 3: Joint Training sciLaMA (gamma=0.05) ===")
+        r0_rich("\n[bold blue]═══ Phase 3: Joint Training sciLaMA (γ=0.05) ═══[/bold blue]")
         phase3_config = copy.deepcopy(self.config)
         phase3_config.training.mode = "direct"
         phase3_config.training.gamma = self.config.training.gamma  # joint: default 0.05
@@ -268,7 +269,7 @@ class SciLaMATrainer:
         module_phase3 = self._create_module(phase3_config)
         self._setup_Xt_if_needed(module_phase3, "direct")
 
-        print("Transferring both Sample VAE and Feature VAE weights (all trainable)...")
+        r0_print("Transferring both Sample VAE and Feature VAE weights (all trainable)...")
         module_phase3.sample_encoder.load_state_dict(module_phase2.sample_encoder.state_dict())
         module_phase3.sample_decoder.load_state_dict(module_phase2.sample_decoder.state_dict())
         module_phase3.feature_encoder.load_state_dict(module_phase2.feature_encoder.state_dict())
@@ -279,7 +280,7 @@ class SciLaMATrainer:
         trainer_p3.fit(module_phase3, self.datamodule)
 
         best_p3_path = callbacks_p3[0].best_model_path
-        print(f"Phase 3 complete. Best model: {best_p3_path}")
+        r0_rich(f"[green]Phase 3 complete.[/green] Best model: {best_p3_path}")
         self.module = self._load_best_if_saved(module_phase3, best_p3_path, phase3_config)
-        print("\nSaving final outputs...")
+        r0_print("\nSaving final outputs...")
         self._save_outputs_after_training(self.module, sample_suffix="stepwise_sciLaMA", feature_suffix="stepwise_sciLaMA")

@@ -42,8 +42,9 @@ class SciLaMADataModule(pl.LightningDataModule):
         self._covariate_encoding_state = state
 
     def setup(self, stage: str | None = None):
+        from .utils import r0_print, r0_rich
         # load data
-        print(f"Loading data from {self.config.path}...")
+        r0_print(f"Loading data from {self.config.path}...")
         try:
             self.adata = sc.read_h5ad(self.config.path)
         except Exception as e:
@@ -52,23 +53,23 @@ class SciLaMADataModule(pl.LightningDataModule):
         # check scaling
         if self.config.check_scaling:
             if not check_normalized_scaled(self.adata):
-                print("Warning: Data might not be normalized/scaled correctly for MSE loss.")
+                r0_print("Warning: Data might not be normalized/scaled correctly for MSE loss.")
 
         # handle external feature embeddings
         if self.config.external_feature_embeddings:
-            print("Loading external feature embeddings...")
+            r0_print("Loading external feature embeddings...")
             self.adata, self.feature_input_embeddings = load_and_match_feature_embeddings(
                 self.adata, self.config.external_feature_embeddings
             )
         else:
-            print("No external feature embeddings provided. Using all features.")
+            r0_print("No external feature embeddings provided. Using all features.")
             self.adata.var["static_embedding"] = True
             self.feature_input_embeddings = {}
 
         # use only genes with static_embedding=True for modeling (no adata subsetting)
         static_mask = self.adata.var["static_embedding"].values
         self.n_features = int(static_mask.sum())
-        print(f"Modeling {self.n_features} features (static_embedding=True).")
+        r0_print(f"Modeling {self.n_features} features (static_embedding=True).")
 
         # split indices (need train first to fit covariate encoding from train only)
         if self.config.split_column not in self.adata.obs:
@@ -90,9 +91,9 @@ class SciLaMADataModule(pl.LightningDataModule):
                 train_obs = self.adata.obs.loc[train_idx]
                 self._covariate_encoding_state = fit_covariate_encoding_state(train_obs, self.config)
                 if cat_cols:
-                    print(f"Encoding discrete covariates (one-hot): {cat_cols}")
+                    r0_print(f"Encoding discrete covariates (one-hot): {cat_cols}")
                 if has_cont:
-                    print(f"Encoding continuous covariates (z-score): {self.config.continuous_covariate_keys}")
+                    r0_print(f"Encoding continuous covariates (z-score): {self.config.continuous_covariate_keys}")
             covariates = encode_covariates(self.adata.obs, self._covariate_encoding_state, self.config)
             covariates = torch.FloatTensor(covariates)
             self.n_covariates = covariates.shape[1]
@@ -113,10 +114,12 @@ class SciLaMADataModule(pl.LightningDataModule):
         if test_mask.sum() > 0:
             self.test_dataset = RNADataset(X[test_mask], covariates[test_mask])
 
-        print(f"Data setup complete: Train={len(self.train_dataset) if self.train_dataset else 0}, "
-              f"Val={len(self.val_dataset) if self.val_dataset else 0}, "
-              f"Test={len(self.test_dataset) if self.test_dataset else 0}")
-        print(f"Features: {self.n_features}, Covariates: {self.n_covariates}")
+        r0_rich(
+            f"[green]Data setup complete:[/green] Train={len(self.train_dataset) if self.train_dataset else 0}, "
+            f"Val={len(self.val_dataset) if self.val_dataset else 0}, "
+            f"Test={len(self.test_dataset) if self.test_dataset else 0}"
+        )
+        r0_rich(f"Features: [bold]{self.n_features}[/bold], Covariates: [bold]{self.n_covariates}[/bold]")
 
     def train_dataloader(self):
         return DataLoader(
